@@ -1,0 +1,23 @@
+CS341 lec wed - shortest paths (touched for commit)
+
+Dijkstra
+- greedy, pick min-dist unvisited node, relax its edges
+- needs NON-NEGATIVE weights. why exactly?? something about the greedy choice
+  being final once you pop it -- ask prof
+- priority queue -> O((V+E) log V) with binary heap
+- proof of correctness was an exchange argument, didn't follow the second half
+
+Bellman-Ford
+- relax ALL edges V-1 times
+- O(VE), slower but handles negative weights
+- Vth pass still relaxes => negative cycle exists
+- this is the DP one? lecturer said "think of it as DP over path length" - unclear to me
+
+relaxation: if d[u] + w(u,v) < d[v] then d[v] = d[u] + w(u,v)
+
+tutorial Thu:
+- Q3 was Dijkstra on a graph with one negative edge, show it fails. got it wrong
+- Q4 asked to modify BF to print the actual negative cycle, didn't finish
+- Q5 all-pairs, Floyd-Warshall mentioned but not examinable? confirm
+
+TODO: redo tut Q3 and Q4 before assignment 3

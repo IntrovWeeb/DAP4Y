@@ -1,0 +1,25 @@
+STAT260 - week 7 lecture + tut (touched for commit)
+
+Law of Large Numbers
+- weak LLN: sample mean converges in probability to mu
+- strong LLN: almost sure convergence. difference between the two is confusing,
+  revisit
+- needs finite variance for the easy Chebyshev proof
+
+Central Limit Theorem
+- sqrt(n)(Xbar - mu)/sigma -> N(0,1) in distribution
+- works regardless of underlying distribution (if finite variance)
+- rule of thumb n >= 30, prof said this is folklore not theorem
+
+Chebyshev: P(|X - mu| >= k*sigma) <= 1/k^2
+- used it to bound the LLN, fine
+- but I keep mixing up when to use Chebyshev vs Markov ??
+
+MGFs
+- M(t) = E[e^tX], uniqueness theorem lets you identify distributions
+- used in the CLT proof via Taylor expansion, not sure I could reproduce it
+
+tutorial:
+- Q2 normal approximation to binomial, continuity correction -- forgot the 0.5
+- Q5 wanted a Chebyshev bound, I used the CLT instead and lost marks
+- convergence in probability vs distribution: not sure which implies which

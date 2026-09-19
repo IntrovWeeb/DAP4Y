@@ -1,0 +1,28 @@
+CS 341 - Algorithms (Fall 2026) (touched for commit)
+Instructor: Dr. A. Bhandari
+Textbook: Cormen et al., Introduction to Algorithms, 4th ed.
+Credits: 3
+
+GRADING
+Assignment 1 - Divide & Conquer (8%) due September 26
+Assignment 2 - Greedy & Dynamic Programming (8%) - due October 10
+Assignment 3 - Graph Algorithms (9%) due Oct 24
+Midterm exam (25%) - October 17, in class
+Assignment 4 - NP-completeness (10%) due November 14
+Final exam (40%) - December 8
+
+WEEKLY OUTLINE
+Week 1: Asymptotic analysis, recurrences, Master theorem
+Week 2: Divide and conquer, mergesort, closest pair
+Week 3: Greedy algorithms, exchange arguments, matroids
+Week 4: Dynamic programming, memoisation, optimal substructure
+Week 5: Graph traversal - BFS, DFS, topological sort
+Week 6: Shortest paths - Dijkstra, Bellman-Ford
+Week 7: Minimum spanning trees - Kruskal, Prim, union-find
+Week 8: Network flow, max-flow min-cut, Ford-Fulkerson
+Week 9: NP-completeness, reductions, SAT
+Week 10: Approximation algorithms
+Week 11: Randomised algorithms, concentration bounds
+Week 12: Review
+
+Late policy: 10% per day, max 3 days. No collaboration on exams.
