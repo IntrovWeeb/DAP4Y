@@ -1,0 +1,27 @@
+STAT 260: Probability & Statistical Inference - Fall 2026
+Lecturer: Prof. M. Okafor
+Text: Wackerly, Mendenhall & Scheaffer, Mathematical Statistics with Applications, 7e
+3 credits
+
+Assessment breakdown
+- Weekly quizzes, best 8 of 10 (15%) - every Friday from Sept 19
+- Problem Set 1 (10%) due 2026-09-30
+- Midterm test (25%) on October 20
+- Problem Set 2 (10%) due November 6
+- Final examination (40%) - December 11
+
+Schedule
+Week 1: Sample spaces, counting, conditional probability
+Week 2: Bayes theorem, independence
+Week 3: Discrete random variables, expectation, variance
+Week 4: Continuous random variables, density functions
+Week 5: Joint distributions, covariance, correlation
+Week 6: Transformations, moment generating functions
+Week 7: Law of large numbers, Central Limit Theorem
+Week 8: Point estimation, bias, consistency
+Week 9: Maximum likelihood estimation
+Week 10: Confidence intervals
+Week 11: Hypothesis testing, type I and II errors
+Week 12: Linear regression, least squares
+
+Office hours Tue/Thu 14:00-15:30.
