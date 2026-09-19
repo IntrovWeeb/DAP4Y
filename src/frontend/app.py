@@ -129,79 +129,43 @@ with tabs[0]:
                     "'videos put me to sleep'.")
     st.caption("Same field as the Profile tab. Sessions, resources and grading tone adapt to it.")
 
-    # ---- 3. calendar ---------------------------------------------------
-    st.subheader("3 · Your calendar")
-    st.caption("Anything already on it becomes a busy block the plan works around. "
-               "Read-only — DAP4Y never edits your calendar.")
-    cal_mode = st.radio("Source", ["Google Calendar", "Calendar file (.ics)", "Skip"],
-                        horizontal=True, label_visibility="collapsed", key="bp_cal_mode")
-    cal_days = st.slider("Days ahead to read", 7, 28, 14, key="bp_cal_days")
-    share_titles = st.checkbox(
-        "Share event titles with Gemini (otherwise every event is just “Busy”)",
-        value=False, key="bp_cal_titles")
+    # ---- 3. availability -----------------------------------------------
+    st.subheader("3 · When are you free?")
+    st.caption("One window per day — the hours you could actually study. The plan "
+               "never places a block outside these.")
 
-    def _show_cal_result(blocks: list[dict]) -> None:
-        st.session_state["busy_cal"] = blocks
-        if blocks:
-            st.success(f"{len(blocks)} busy block(s) imported.")
-            st.dataframe(pd.DataFrame(blocks), use_container_width=True, hide_index=True)
-        else:
-            st.info("No timed events found in that window.")
+    _avail = api.get_availability()
+    _edited = st.data_editor(
+        pd.DataFrame([
+            {"Day": r["day"], "Available": bool(r["available"]),
+             "From": r["start_time"], "To": r["end_time"]}
+            for r in _avail
+        ]),
+        width='stretch', hide_index=True, key="bp_avail", disabled=["Day"],
+        column_config={
+            "Available": st.column_config.CheckboxColumn(
+                "Available", help="Uncheck a day you never want blocks on"),
+            "From": st.column_config.TextColumn("From", help="24h, e.g. 17:00"),
+            "To": st.column_config.TextColumn("To", help="24h, e.g. 22:00"),
+        })
 
-    if cal_mode == "Google Calendar":
-        if not cal.configured():
-            st.warning("Google Calendar isn't set up on this machine yet.", icon="🔑")
-            with st.expander("One-time setup (≈3 min)"):
-                st.markdown(
-                    "1. [Google Cloud Console](https://console.cloud.google.com/) → new project → "
-                    "enable **Google Calendar API**.\n"
-                    "2. *OAuth consent screen* → External → add yourself (and teammates) as "
-                    "**test users**.\n"
-                    "3. *Credentials* → Create → **OAuth client ID** → type **Desktop app** → "
-                    "download the JSON.\n"
-                    f"4. Save it as `{cal.CREDENTIALS_PATH.name}` in the repo root "
-                    "(gitignored), refresh this page.\n\n"
-                    "No time? Use **Calendar file (.ics)** — same result, no sign-in.")
-        elif not cal.connected():
-            if st.button("🔗 Connect Google Calendar", key="bp_gcal_connect"):
-                try:
-                    with st.spinner("Finish signing in in the browser window that just opened…"):
-                        cal.connect()
-                    st.rerun()
-                except cal.CalendarError as exc:
-                    st.error(str(exc))
+    _c1, _c2 = st.columns([1, 3])
+    if _c1.button("💾 Save availability", key="bp_avail_save"):
+        _bad = [r for _, r in _edited.iterrows()
+                if not TIME_RE.match(str(r["From"]).strip())
+                or not TIME_RE.match(str(r["To"]).strip())]
+        if _bad:
+            st.error("Times must be 24-hour `HH:MM`, e.g. `17:00`.")
         else:
-            try:
-                calendars = cal.list_calendars()
-                picked = st.multiselect(
-                    "Calendars", calendars, format_func=lambda c: c["name"],
-                    default=[c for c in calendars if c["primary"]], key="bp_gcal_pick")
-                c1, c2 = st.columns(2)
-                if c1.button("📅 Import events", key="bp_gcal_fetch"):
-                    with st.spinner("Reading your calendar…"):
-                        _show_cal_result(cal.fetch_busy(
-                            cal_days, [c["id"] for c in picked] or None, share_titles))
-                if c2.button("Disconnect", key="bp_gcal_off"):
-                    cal.disconnect()
-                    st.session_state.pop("busy_cal", None)
-                    st.rerun()
-            except cal.CalendarError as exc:
-                st.error(str(exc))
-    elif cal_mode == "Calendar file (.ics)":
-        ics = st.file_uploader(
-            "Export from Google Calendar (Settings → Import & export), Apple or Outlook",
-            type=["ics"], key="bp_ics")
-        if ics and st.button("📅 Import events", key="bp_ics_go"):
-            try:
-                _show_cal_result(cal.parse_ics(ics.getvalue(), cal_days,
-                                               include_titles=share_titles))
-            except cal.CalendarError as exc:
-                st.error(str(exc))
-    else:
-        st.session_state.pop("busy_cal", None)
-    if st.session_state.get("busy_cal") and cal_mode != "Skip":
-        st.caption(f"✔ {len(st.session_state['busy_cal'])} calendar block(s) loaded — "
-                   "they'll be used when you build the plan.")
+            api.save_availability([
+                {"weekday": i, "available": bool(r["Available"]),
+                 "start_time": str(r["From"]).strip(), "end_time": str(r["To"]).strip()}
+                for i, (_, r) in enumerate(_edited.iterrows())
+            ])
+            st.success("Saved.")
+            st.rerun()
+    _mins = api.weekly_available_minutes()
+    _c2.metric("Total weekly availability", f"{_mins // 60}h {_mins % 60}m")
 
     # ---- go -------------------------------------------------------------
     st.divider()
@@ -237,13 +201,12 @@ with tabs[0]:
 
         if added:
             api.recompute_priorities()
-            busy_now = cal.merge_busy(st.session_state.get("busy_life", []),
-                                      st.session_state.get("busy_cal", []))
-            with st.spinner("Planning around your calendar…"):
+            busy_now = st.session_state.get("busy_life", [])
+            with st.spinner("Planning around your availability…"):
                 plan = api.build_schedule(int(horizon_bp), busy_blocks=busy_now, replace=True)
             source_badge(plan["source"])
             st.success(f"Base plan ready: {plan['planned']} study blocks over the next "
-                       f"{int(horizon_bp)} days, around {len(busy_now)} busy block(s). "
+                       f"{int(horizon_bp)} days, inside your availability. "
                        "See the Priorities and Schedule tabs.")
             for t in plan["payload"].get("tradeoffs", []):
                 st.warning(t)
@@ -409,6 +372,187 @@ with tabs[1]:
 # ==========================================================================
 # 2. PLAN  -- the pre-planning stage
 # ==========================================================================
+with tabs[1]:
+    st.header("Plan the term")
+    st.caption("Syllabi → UofT Index difficulty → your availability → empty study "
+               "blocks. Filling those blocks with actual tasks is a later stage.")
+
+    courses = api.list_courses()
+    if not courses:
+        st.info("Upload a syllabus on the Intake tab first, or load the demo semester.")
+    else:
+        # ---- step 1: difficulty from UofT Index -------------------------
+        st.subheader("1 · Course difficulty, from uoftindex.ca")
+        st.caption("Gemini is handed one JSON payload fetched from uoftindex.ca and "
+                   "nothing else — no web access, no prior knowledge of the course. "
+                   "Every rating below traces to a field on that site.")
+
+        c1, c2 = st.columns([1, 3])
+        if c1.button("🔍 Look up all courses", type="primary", width='stretch'):
+            with st.spinner("Querying uoftindex.ca, then asking Gemini to read it…"):
+                st.session_state["difficulty_results"] = api.lookup_all_difficulties()
+            st.rerun()
+        c2.caption("Cached for 7 days so we don't hammer a volunteer-run site.")
+
+        for res in st.session_state.get("difficulty_results", []):
+            if not res["ok"]:
+                st.warning(f"**{res['course']['code']}** — {res['error']}")
+                continue
+            c, v = res["course"], res["verdict"]
+            with st.container(border=True):
+                left, right = st.columns([3, 1])
+                with left:
+                    st.markdown(
+                        f"{pill(c['code'], c['colour'])} **{c['name']}**  \n"
+                        f"<small style='opacity:.75'>{v.get('reasoning', '')}</small>",
+                        unsafe_allow_html=True)
+                    sig = v.get("signals_used") or []
+                    if sig:
+                        st.markdown("**Fields used:** " +
+                                    " ".join(f"`{s}`" for s in sig))
+                with right:
+                    st.metric("Difficulty", f"{c['difficulty']}/5",
+                              help=f"confidence: {v.get('confidence', '?')}")
+                    st.caption(f"~{round((c['weekly_study_min'] or 0) / 60, 1)} h/week")
+                m = st.columns(4)
+                m[0].metric("Drop rate", f"{c['uoft_drop_rate']}%"
+                            if c["uoft_drop_rate"] is not None else "—")
+                m[1].metric("Workload", f"{c['uoft_workload']}/5"
+                            if c["uoft_workload"] is not None else "—")
+                m[2].metric("Rating", f"{c['uoft_rating']}/5"
+                            if c["uoft_rating"] is not None else "—")
+                m[3].metric("Reviews", c["uoft_reviews"] or 0)
+                source_badge(res["source"])
+                if c["difficulty_source"] == "manual":
+                    st.info("You set this difficulty by hand — the lookup left it alone.")
+
+        st.divider()
+
+        # ---- step 2: availability ---------------------------------------
+        st.subheader("2 · When are you free?")
+        st.caption("One window per day — the hours you could actually study. "
+                   "The planner never places a block outside these.")
+
+        avail = api.get_availability()
+        edited = st.data_editor(
+            pd.DataFrame([
+                {"Day": r["day"], "Available": bool(r["available"]),
+                 "From": r["start_time"], "To": r["end_time"]}
+                for r in avail
+            ]),
+            width='stretch', hide_index=True, key="avail_editor",
+            disabled=["Day"],
+            column_config={
+                "Available": st.column_config.CheckboxColumn(
+                    "Available", help="Uncheck a day you never want blocks on"),
+                "From": st.column_config.TextColumn("From", help="24h, e.g. 17:00"),
+                "To": st.column_config.TextColumn("To", help="24h, e.g. 22:00"),
+            })
+
+        c1, c2 = st.columns([1, 3])
+        if c1.button("💾 Save availability", type="primary"):
+            bad = [r for _, r in edited.iterrows()
+                   if not TIME_RE.match(str(r["From"]).strip())
+                   or not TIME_RE.match(str(r["To"]).strip())]
+            if bad:
+                st.error("Times must be 24-hour `HH:MM`, e.g. `17:00`.")
+            else:
+                api.save_availability([
+                    {"weekday": i, "available": bool(r["Available"]),
+                     "start_time": str(r["From"]).strip(),
+                     "end_time": str(r["To"]).strip()}
+                    for i, (_, r) in enumerate(edited.iterrows())
+                ])
+                st.success("Saved.")
+                st.rerun()
+        mins = api.weekly_available_minutes()
+        c2.metric("Total weekly availability", f"{mins // 60}h {mins % 60}m")
+
+        st.divider()
+
+        # ---- step 3: generate blocks ------------------------------------
+        st.subheader("3 · Generate study blocks")
+        st.caption("Gemini splits your weekly capacity across courses by difficulty, "
+                   "then places blocks inside the availability you set above.")
+
+        c1, c2, c3 = st.columns([1, 1, 2])
+        horizon = c1.number_input("Days ahead", 1, 28, 14)
+        replace = c2.checkbox("Replace plan", value=True)
+        if not gemini.live():
+            c3.warning("Needs a Gemini key", icon="🟡")
+
+        if st.button("🧭 Generate the term plan", type="primary",
+                     disabled=not gemini.live()):
+            with st.spinner("Gemini is laying out your term…"):
+                st.session_state["preplan"] = api.build_initial_blocks(
+                    int(horizon), replace=replace)
+            st.rerun()
+
+        plan = st.session_state.get("preplan")
+        if plan and plan.get("ok"):
+            source_badge(plan["source"])
+            st.success(f"{plan['planned']} empty study blocks created. "
+                       "Tasks get assigned in the next stage.")
+
+            for note in plan.get("calendar_notes", []):
+                st.caption(f"• {note}")
+
+            alloc = plan["payload"].get("allocation", [])
+            if alloc:
+                st.markdown("**How Gemini split your week**")
+                st.dataframe(
+                    pd.DataFrame(alloc)[["course_code", "weekly_minutes",
+                                         "share_pct", "why"]],
+                    width='stretch', hide_index=True,
+                    column_config={"share_pct": st.column_config.ProgressColumn(
+                        "share", min_value=0, max_value=100, format="%.1f%%")})
+
+            if plan["payload"].get("constraints_understood"):
+                st.info("**Constraints applied:** " +
+                        " · ".join(plan["payload"]["constraints_understood"]))
+            for t in plan["payload"].get("tradeoffs", []):
+                st.warning(t)
+
+            with st.expander("🕒 The availability Gemini had to work inside"):
+                st.dataframe(pd.DataFrame(plan.get("availability", [])),
+                             width='stretch', hide_index=True)
+        elif plan:
+            st.error(plan.get("error", "Planning failed."))
+            if plan.get("source") == "unavailable":
+                st.caption("Scheduling has no offline fallback on purpose — a "
+                           "fabricated timetable that looks real is worse than an "
+                           "error. Set `GEMINI_API_KEY` in `.env` and retry.")
+
+        # ---- the resulting blocks ---------------------------------------
+        blocks = [s for s in api.list_sessions() if s.get("stage") == "preplan"]
+        if blocks:
+            st.divider()
+            st.subheader(f"Your term plan · {len(blocks)} blocks")
+            st.caption("Each block is empty by design — a course, a time, and a reason.")
+            by_date: dict[str, list] = {}
+            for b in blocks:
+                by_date.setdefault(b["date"], []).append(b)
+            for d, items in list(by_date.items())[:14]:
+                try:
+                    label = datetime.fromisoformat(d).strftime("%A %d %b")
+                except ValueError:
+                    label = d
+                mins = sum(1 for _ in items)
+                st.markdown(f"**{label}** <small style='opacity:.6'>· {mins} block(s)"
+                            "</small>", unsafe_allow_html=True)
+                for b in items:
+                    st.markdown(
+                        f"<div style='border-left:3px solid {b.get('colour') or '#555'};"
+                        f"padding:2px 10px;margin:4px 0'>"
+                        f"<code>{b['start_time']}–{b['end_time']}</code> "
+                        f"<b>{b['focus']}</b><br>"
+                        f"<small style='opacity:.7'>{b['rationale']}</small></div>",
+                        unsafe_allow_html=True)
+
+
+# ==========================================================================
+# 3. PRIORITIES
+# ==========================================================================
 with tabs[2]:
     st.header("What to do next, and why")
     courses = api.list_courses()
@@ -503,9 +647,6 @@ with tabs[3]:
     replace = c2.checkbox("Replace existing plan", value=True)
     busy = cal.merge_busy(st.session_state.get("busy_life", []),
                           st.session_state.get("busy_cal", []))
-    c3.caption(f"{len(busy)} busy block(s) from your calendar and the Life Compiler."
-               if busy else "No busy blocks — import a calendar on the Base plan tab, or "
-                            "compile a sentence on the Intake tab.")
 
     if st.button("🗓️ Build schedule", type="primary"):
         with st.spinner("Planning…"):
@@ -522,10 +663,6 @@ with tabs[3]:
     if not sessions:
         st.info("No schedule yet.")
     else:
-        st.download_button("⬇️ Export plan to your calendar (.ics)", cal.sessions_to_ics(sessions),
-                           file_name="dap4y_study_plan.ics", mime="text/calendar",
-                           help="Import into Google Calendar / Apple / Outlook. Re-importing "
-                                "updates the same events instead of duplicating them.")
         by_date: dict[str, list] = {}
         for s in sessions:
             by_date.setdefault(s["date"], []).append(s)

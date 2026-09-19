@@ -24,7 +24,7 @@ from . import mock
 
 load_dotenv()
 
-MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "3"))
 RETRY_BACKOFF = 1.5   # seconds, doubled each attempt
 _API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
