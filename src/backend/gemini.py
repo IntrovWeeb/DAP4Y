@@ -379,12 +379,18 @@ def parse_syllabus(text: str, attachments: list[Attachment] | None = None,
 
 
 def parse_notes(text: str, course_code: str, attachments: list[Attachment] | None = None,
-                today: str = "") -> tuple[dict, str]:
+                today: str = "", understanding_context: str = "",
+                energy_level: int | None = None) -> tuple[dict, str]:
     """Lecture/tutorial notes -> topics + concrete TODOs for a study session."""
 
     def _run():
         prompt = (
             f"Today is {today}. These are notes for course {course_code}.\n"
+            f"Student self-reported understanding: {understanding_context or 'No extra context provided.'}\n"
+            f"Student energy level today: {energy_level if energy_level is not None else 'not provided'}/10\n"
+            "Use this to calibrate task intensity and confidence. Lower energy should "
+            "shift the recommended TODOs toward shorter, more focused tasks, while "
+            "confusion should raise the priority of targeted repair work.\n"
             "Pull out the topics covered, and turn the material into concrete study "
             "TODOs -- each one small enough to finish in a single sitting, with an "
             "honest est_minutes. Prefer active verbs ('derive', 'redo Q4', 'rewrite the "
@@ -398,7 +404,7 @@ def parse_notes(text: str, course_code: str, attachments: list[Attachment] | Non
         return _call(system=_SYSTEM, prompt=prompt, schema=NOTES_SCHEMA,
                      attachments=attachments)
 
-    return _safe(_run, mock.parse_notes, text, course_code)
+    return _safe(_run, mock.parse_notes, text, course_code, understanding_context, energy_level)
 
 
 def parse_intent(text: str, today: str = "") -> tuple[dict, str]:
