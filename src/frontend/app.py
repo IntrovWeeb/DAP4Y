@@ -18,7 +18,8 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.backend import app as api  # noqa: E402
-from src.backend import gemini, seed  # noqa: E402
+from src.backend import calendar_io as cal  # noqa: E402
+from src.backend import gemini, intake_files, seed  # noqa: E402
 from src.backend.gemini import Attachment  # noqa: E402
 
 st.set_page_config(page_title="DAP4Y", page_icon="🎓", layout="wide")
@@ -95,22 +96,166 @@ if st.session_state.pop("seed_report", None):
     st.toast("Demo semester loaded", icon="🌱")
 
 tabs = st.tabs([
-    "📥 Intake", "📊 Priorities", "🗓️ Schedule", "🧠 Study & Quiz",
+    "🚀 Base plan", "📥 Intake", "📊 Priorities", "🗓️ Schedule", "🧠 Study & Quiz",
     "🩺 Coaching", "⚙️ Profile",
 ])
 
 # ==========================================================================
-# 1. INTAKE  -- "Explain My Mess"
+# 0. BASE PLAN  -- blackboard: "User inputs this when CREATING the base plan"
+#    syllabus (file) + study habits (text -> Gemini) + Google Calendar
 # ==========================================================================
 with tabs[0]:
+    st.header("Create your base plan")
+    st.caption("Three inputs, one button. Notes come later, on the Intake tab, once the "
+               "semester exists.")
+
+    # ---- 1. syllabi (file) ---------------------------------------------
+    st.subheader("1 · Syllabi")
+    syl_files = st.file_uploader(
+        "One file per course — PDF, Word, photo/screenshot, or text",
+        type=intake_files.SYLLABUS_TYPES, accept_multiple_files=True, key="bp_syl")
+    if syl_files:
+        st.caption(f"{len(syl_files)} course(s) ready: " + ", ".join(f.name for f in syl_files))
+
+    # ---- 2. study habits (text -> Gemini) ------------------------------
+    st.subheader("2 · How you study")
+    _student = api.get_student()
+    bp_habits = st.text_area(
+        "Study habits", _student.get("study_habits", ""), height=110, key="bp_habits",
+        placeholder="Be honest — 'I cram', 'I avoid the courses I'm worst at', "
+                    "'videos put me to sleep'.")
+    st.caption("Same field as the Profile tab. Sessions, resources and grading tone adapt to it.")
+
+    # ---- 3. calendar ---------------------------------------------------
+    st.subheader("3 · Your calendar")
+    st.caption("Anything already on it becomes a busy block the plan works around. "
+               "Read-only — DAP4Y never edits your calendar.")
+    cal_mode = st.radio("Source", ["Google Calendar", "Calendar file (.ics)", "Skip"],
+                        horizontal=True, label_visibility="collapsed", key="bp_cal_mode")
+    cal_days = st.slider("Days ahead to read", 7, 28, 14, key="bp_cal_days")
+    share_titles = st.checkbox(
+        "Share event titles with Gemini (otherwise every event is just “Busy”)",
+        value=False, key="bp_cal_titles")
+
+    def _show_cal_result(blocks: list[dict]) -> None:
+        st.session_state["busy_cal"] = blocks
+        if blocks:
+            st.success(f"{len(blocks)} busy block(s) imported.")
+            st.dataframe(pd.DataFrame(blocks), use_container_width=True, hide_index=True)
+        else:
+            st.info("No timed events found in that window.")
+
+    if cal_mode == "Google Calendar":
+        if not cal.configured():
+            st.warning("Google Calendar isn't set up on this machine yet.", icon="🔑")
+            with st.expander("One-time setup (≈3 min)"):
+                st.markdown(
+                    "1. [Google Cloud Console](https://console.cloud.google.com/) → new project → "
+                    "enable **Google Calendar API**.\n"
+                    "2. *OAuth consent screen* → External → add yourself (and teammates) as "
+                    "**test users**.\n"
+                    "3. *Credentials* → Create → **OAuth client ID** → type **Desktop app** → "
+                    "download the JSON.\n"
+                    f"4. Save it as `{cal.CREDENTIALS_PATH.name}` in the repo root "
+                    "(gitignored), refresh this page.\n\n"
+                    "No time? Use **Calendar file (.ics)** — same result, no sign-in.")
+        elif not cal.connected():
+            if st.button("🔗 Connect Google Calendar", key="bp_gcal_connect"):
+                try:
+                    with st.spinner("Finish signing in in the browser window that just opened…"):
+                        cal.connect()
+                    st.rerun()
+                except cal.CalendarError as exc:
+                    st.error(str(exc))
+        else:
+            try:
+                calendars = cal.list_calendars()
+                picked = st.multiselect(
+                    "Calendars", calendars, format_func=lambda c: c["name"],
+                    default=[c for c in calendars if c["primary"]], key="bp_gcal_pick")
+                c1, c2 = st.columns(2)
+                if c1.button("📅 Import events", key="bp_gcal_fetch"):
+                    with st.spinner("Reading your calendar…"):
+                        _show_cal_result(cal.fetch_busy(
+                            cal_days, [c["id"] for c in picked] or None, share_titles))
+                if c2.button("Disconnect", key="bp_gcal_off"):
+                    cal.disconnect()
+                    st.session_state.pop("busy_cal", None)
+                    st.rerun()
+            except cal.CalendarError as exc:
+                st.error(str(exc))
+    elif cal_mode == "Calendar file (.ics)":
+        ics = st.file_uploader(
+            "Export from Google Calendar (Settings → Import & export), Apple or Outlook",
+            type=["ics"], key="bp_ics")
+        if ics and st.button("📅 Import events", key="bp_ics_go"):
+            try:
+                _show_cal_result(cal.parse_ics(ics.getvalue(), cal_days,
+                                               include_titles=share_titles))
+            except cal.CalendarError as exc:
+                st.error(str(exc))
+    else:
+        st.session_state.pop("busy_cal", None)
+    if st.session_state.get("busy_cal") and cal_mode != "Skip":
+        st.caption(f"✔ {len(st.session_state['busy_cal'])} calendar block(s) loaded — "
+                   "they'll be used when you build the plan.")
+
+    # ---- go -------------------------------------------------------------
+    st.divider()
+    horizon_bp = st.number_input("Plan how many days ahead?", 3, 21, 7, key="bp_horizon")
+    if st.button("🚀 Build my base plan", type="primary", disabled=not syl_files,
+                 key="bp_go"):
+        # habits: reuse the Profile save path, keeping every other setting as-is
+        api.save_student(
+            name=_student.get("name", ""), term=_student.get("term", ""),
+            study_habits=bp_habits,
+            preferred_windows=_student.get("preferred_windows", []),
+            daily_capacity_min=int(_student.get("daily_capacity_min", 180)),
+            session_minutes=int(_student.get("session_minutes", 90)),
+            break_minutes=int(_student.get("break_minutes", 15)))
+
+        added = 0
+        for f in syl_files:
+            with st.spinner(f"Gemini is reading {f.name}…"):
+                try:
+                    text, atts = intake_files.prepare(f.name, f.getvalue())
+                except ValueError as exc:
+                    st.error(str(exc))
+                    continue
+                res = api.ingest_syllabus(text, atts, filename=f.name)
+            c = res["course"]
+            added += 1
+            st.success(f"**{c['code']} — {c['name']}** · {res['created']['assessments']} graded "
+                       f"items · {res['created']['topics']} topics · "
+                       f"{res['created']['todos']} TODOs")
+            source_badge(res["source"])
+            for w in res.get("warnings", []):
+                st.warning(f"{f.name}: {w}")
+
+        if added:
+            api.recompute_priorities()
+            busy_now = cal.merge_busy(st.session_state.get("busy_life", []),
+                                      st.session_state.get("busy_cal", []))
+            with st.spinner("Planning around your calendar…"):
+                plan = api.build_schedule(int(horizon_bp), busy_blocks=busy_now, replace=True)
+            source_badge(plan["source"])
+            st.success(f"Base plan ready: {plan['planned']} study blocks over the next "
+                       f"{int(horizon_bp)} days, around {len(busy_now)} busy block(s). "
+                       "See the Priorities and Schedule tabs.")
+            for t in plan["payload"].get("tradeoffs", []):
+                st.warning(t)
+
+# ==========================================================================
+# 1. INTAKE  -- "Explain My Mess"
+# ==========================================================================
+with tabs[1]:
     st.header("Give Gemini your mess")
     st.caption("Syllabi, portal screenshots, lecture notes, a voice memo, or one "
                "sentence about your week. Gemini turns all of it into rows in the database.")
 
     intake = st.radio("What are you handing over?",
                       ["Syllabus / course outline", "Lecture or tutorial notes",
-                       "Plain-language week ('Life Compiler')", "Add to schedule",
-                       "Past / mock test"],
+                       "Plain-language week ('Life Compiler')", "Past / mock test"],
                       horizontal=True, label_visibility="collapsed")
 
     # ---- syllabus -------------------------------------------------------
@@ -165,14 +310,6 @@ with tabs[0]:
                 text = st.text_area("Paste your notes", height=260, key="note_text",
                                     placeholder="Messy is fine. '??' and 'ask prof' are "
                                                 "signal, not noise.")
-                energy_level = st.slider(
-                    "Energy level",
-                    min_value=1,
-                    max_value=10,
-                    value=6,
-                    step=1,
-                    help="How much energy do you feel you have for this study session?",
-                )
             with col_b:
                 files = st.file_uploader("…or drop files / a whiteboard photo",
                                          type=UPLOAD_TYPES, accept_multiple_files=True,
@@ -185,13 +322,8 @@ with tabs[0]:
 
             if st.button("🚀 Extract TODOs", type="primary", disabled=not (text or files)):
                 with st.spinner("Gemini is reading your notes…"):
-                    res = api.ingest_notes(
-                        course["id"],
-                        text,
-                        to_attachments(files),
-                        filename=", ".join(f.name for f in files or []),
-                        energy_level=energy_level,
-                    )
+                    res = api.ingest_notes(course["id"], text, to_attachments(files),
+                                           filename=", ".join(f.name for f in files or []))
                 source_badge(res["source"])
                 created = res["created"]
                 st.success(f"{len(created.get('topics', []))} topics · "
@@ -224,7 +356,7 @@ with tabs[0]:
                 st.markdown("**Busy blocks**")
                 st.dataframe(pd.DataFrame(p.get("busy_blocks", []) or [{"—": "none found"}]),
                              use_container_width=True, hide_index=True)
-                st.session_state["busy_blocks"] = p.get("busy_blocks", [])
+                st.session_state["busy_life"] = p.get("busy_blocks", [])
             with c2:
                 st.markdown("**Deadlines**")
                 st.dataframe(pd.DataFrame(p.get("deadlines", []) or [{"—": "none found"}]),
@@ -237,65 +369,6 @@ with tabs[0]:
                                "you've added.")
             st.markdown("**Preferences written to your profile**")
             st.json(p.get("preferences", {}))
-
-    elif intake == "Add to schedule":
-        st.subheader("Add a one-off appointment to your schedule")
-        st.caption("Use this for fixed commitments like a doctor appointment, interview, travel, or family event. These can span multiple days.")
-
-        title = st.text_input("Appointment title", placeholder="Doctor's appointment")
-        start_date = st.date_input("Start date", min_value=datetime.today().date())
-        end_date = st.date_input("End date", min_value=start_date)
-        start_time = st.time_input("Start time")
-        end_time = st.time_input("End time")
-        notes = st.text_area("Notes (optional)", height=80,
-                             placeholder="e.g. Need to leave early for travel or this is a recurring checkup.")
-
-        if st.button("➕ Add appointment to schedule", type="primary", disabled=not title):
-            busy = st.session_state.setdefault("busy_blocks", [])
-            current = start_date
-            while current <= end_date:
-                if current == start_date and current == end_date:
-                    busy.append({
-                        "date": current.isoformat(),
-                        "start_time": start_time.strftime("%H:%M"),
-                        "end_time": end_time.strftime("%H:%M"),
-                        "label": title,
-                        "notes": notes,
-                    })
-                elif current == start_date:
-                    busy.append({
-                        "date": current.isoformat(),
-                        "start_time": start_time.strftime("%H:%M"),
-                        "end_time": "23:59",
-                        "label": title,
-                        "notes": notes,
-                    })
-                elif current == end_date:
-                    busy.append({
-                        "date": current.isoformat(),
-                        "start_time": "00:00",
-                        "end_time": end_time.strftime("%H:%M"),
-                        "label": title,
-                        "notes": notes,
-                    })
-                else:
-                    busy.append({
-                        "date": current.isoformat(),
-                        "start_time": "00:00",
-                        "end_time": "23:59",
-                        "label": title,
-                        "notes": notes,
-                    })
-                current = current + timedelta(days=1)
-            st.success(f"Added '{title}' from {start_date.isoformat()} to {end_date.isoformat()}.")
-            st.session_state["busy_blocks"] = busy
-
-        if st.session_state.get("busy_blocks"):
-            st.divider()
-            st.markdown("**Current scheduled blockers**")
-            block_df = pd.DataFrame(st.session_state["busy_blocks"])
-            st.dataframe(block_df[["date", "start_time", "end_time", "label", "notes"]],
-                         use_container_width=True, hide_index=True)
 
     # ---- past paper -----------------------------------------------------
     else:
@@ -333,7 +406,7 @@ with tabs[0]:
 # ==========================================================================
 # 2. PRIORITIES
 # ==========================================================================
-with tabs[1]:
+with tabs[2]:
     st.header("What to do next, and why")
     courses = api.list_courses()
     if not courses:
@@ -417,7 +490,7 @@ with tabs[1]:
 # ==========================================================================
 # 3. SCHEDULE
 # ==========================================================================
-with tabs[2]:
+with tabs[3]:
     st.header("Your calendar")
     st.caption("Ranked TODOs + your real-life constraints → dated, timed blocks with a "
                "reason attached to each one.")
@@ -425,9 +498,11 @@ with tabs[2]:
     c1, c2, c3 = st.columns([1, 1, 2])
     horizon = c1.number_input("Days ahead", 1, 21, 7)
     replace = c2.checkbox("Replace existing plan", value=True)
-    busy = st.session_state.get("busy_blocks", [])
-    c3.caption(f"{len(busy)} busy block(s) carried over from the Life Compiler."
-               if busy else "No busy blocks — compile a sentence on the Intake tab to add some.")
+    busy = cal.merge_busy(st.session_state.get("busy_life", []),
+                          st.session_state.get("busy_cal", []))
+    c3.caption(f"{len(busy)} busy block(s) from your calendar and the Life Compiler."
+               if busy else "No busy blocks — import a calendar on the Base plan tab, or "
+                            "compile a sentence on the Intake tab.")
 
     if st.button("🗓️ Build schedule", type="primary"):
         with st.spinner("Planning…"):
@@ -444,6 +519,10 @@ with tabs[2]:
     if not sessions:
         st.info("No schedule yet.")
     else:
+        st.download_button("⬇️ Export plan to your calendar (.ics)", cal.sessions_to_ics(sessions),
+                           file_name="dap4y_study_plan.ics", mime="text/calendar",
+                           help="Import into Google Calendar / Apple / Outlook. Re-importing "
+                                "updates the same events instead of duplicating them.")
         by_date: dict[str, list] = {}
         for s in sessions:
             by_date.setdefault(s["date"], []).append(s)
@@ -479,7 +558,7 @@ with tabs[2]:
 # ==========================================================================
 # 4. STUDY & QUIZ
 # ==========================================================================
-with tabs[3]:
+with tabs[4]:
     st.header("Study session")
     courses = api.list_courses()
     if not courses:
@@ -581,7 +660,7 @@ with tabs[3]:
 # ==========================================================================
 # 5. COACHING
 # ==========================================================================
-with tabs[4]:
+with tabs[5]:
     st.header("What you're struggling with")
     if not api.list_courses():
         st.info("Load a semester first.")
@@ -676,7 +755,7 @@ with tabs[4]:
 # ==========================================================================
 # 6. PROFILE
 # ==========================================================================
-with tabs[5]:
+with tabs[6]:
     st.header("Profile")
     st.caption("This is the 'study habits' and 'preferred study time' input from the "
                "blackboard. It changes grading tone, resource format and block placement.")
