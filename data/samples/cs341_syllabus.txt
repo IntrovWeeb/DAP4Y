@@ -1,4 +1,4 @@
-CS 341 - Algorithms (Fall 2026)
+CS 341 - Algorithms (Fall 2026) (touched for commit)
 Instructor: Dr. A. Bhandari
 Textbook: Cormen et al., Introduction to Algorithms, 4th ed.
 Credits: 3

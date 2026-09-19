@@ -1,4 +1,4 @@
-STAT260 - week 7 lecture + tut
+STAT260 - week 7 lecture + tut (touched for commit)
 
 Law of Large Numbers
 - weak LLN: sample mean converges in probability to mu

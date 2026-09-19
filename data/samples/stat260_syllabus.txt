@@ -1,4 +1,4 @@
-STAT 260: Probability & Statistical Inference - Fall 2026
+STAT 260: Probability & Statistical Inference - Fall 2026 (touched for commit)
 Lecturer: Prof. M. Okafor
 Text: Wackerly, Mendenhall & Scheaffer, Mathematical Statistics with Applications, 7e
 3 credits
