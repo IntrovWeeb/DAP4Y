@@ -15,7 +15,7 @@ import json
 from datetime import date, datetime
 from typing import Any
 
-from . import db, gemini, scheduler
+from . import db, gemini, scheduler, uoftindex
 from .gemini import Attachment
 
 COLOURS = ["#6c8ebf", "#b85450", "#82b366", "#9673a6", "#d79b00", "#3d8b8b", "#c06c84"]
@@ -251,6 +251,189 @@ def ingest_intent(text: str) -> dict:
     })
     recompute_priorities()
     return {"payload": payload, "source": source, "deadlines_added": added}
+
+
+# --------------------------------------------------------------------------
+# PRE-PLANNING STAGE
+#
+#   syllabus -> course rows
+#   course   -> uoftindex.ca -> Gemini -> difficulty + weekly hours
+#   calendar + class times -> busy blocks
+#   all of the above -> Gemini -> EMPTY study blocks
+#
+# Populating those blocks with actual tasks is a SEPARATE stage (owned by
+# another teammate) and deliberately does not happen here.
+# --------------------------------------------------------------------------
+
+def lookup_difficulty(course_id: int, use_cache: bool = True) -> dict:
+    """Cross-reference one course against uoftindex.ca and score its difficulty.
+
+    Never overwrites a difficulty the student set by hand.
+    """
+    course = get_course(course_id)
+    if not course:
+        raise ValueError("unknown course")
+
+    try:
+        bundle = uoftindex.fetch(course["code"], use_cache=use_cache)
+    except uoftindex.LookupError_ as exc:
+        return {"ok": False, "course": course, "error": str(exc),
+                "source": "uoftindex", "signals": None}
+
+    signals = uoftindex.difficulty_signals(bundle)
+    verdict, source = gemini.assess_difficulty(bundle["code"], signals)
+
+    info = bundle.get("info") or {}
+    fields = {
+        "uoft_code": bundle["code"],
+        "uoft_drop_rate": info.get("drop"),
+        "uoft_workload": info.get("workload"),
+        "uoft_rating": info.get("rating"),
+        "uoft_reviews": info.get("numReviews"),
+        "uoft_confidence": verdict.get("confidence") or "",
+        "uoft_reasoning": verdict.get("reasoning") or "",
+        "weekly_study_min": int(float(verdict.get("weekly_study_hours") or 0) * 60),
+    }
+    if course["difficulty_source"] != "manual":
+        fields["difficulty"] = max(1, min(5, int(verdict.get("difficulty") or 3)))
+        fields["difficulty_source"] = "uoftindex"
+    db.update("course", course_id, fields)
+
+    db.insert("ingest_log", {
+        "kind": "uoftindex",
+        "filename": bundle["code"],
+        "summary": (f"{bundle['code']}: difficulty {verdict.get('difficulty')}/5 "
+                    f"({verdict.get('confidence')}) [{source}]"),
+        "payload": db.jdump({"signals": signals, "verdict": verdict}),
+    })
+    recompute_priorities()
+    return {"ok": True, "course": get_course(course_id), "verdict": verdict,
+            "signals": signals, "source": source, "fetched_from": bundle["source"]}
+
+
+def lookup_all_difficulties(use_cache: bool = True) -> list[dict]:
+    return [lookup_difficulty(c["id"], use_cache) for c in list_courses()]
+
+
+WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+                 "Saturday", "Sunday"]
+
+
+def get_availability() -> list[dict]:
+    """The student's declared study window for each weekday, Monday first."""
+    rows = db.query("SELECT * FROM availability ORDER BY weekday")
+    by_day = {r["weekday"]: r for r in rows}
+    out = []
+    for i, name in enumerate(WEEKDAY_NAMES):
+        r = by_day.get(i, {"weekday": i, "available": 1,
+                           "start_time": "17:00", "end_time": "22:00"})
+        out.append({**r, "day": name})
+    return out
+
+
+def save_availability(rows: list[dict]) -> None:
+    """``rows`` = [{weekday, available, start_time, end_time}, ...]."""
+    for r in rows:
+        db.execute(
+            "INSERT INTO availability (weekday, available, start_time, end_time) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(weekday) DO UPDATE SET "
+            "available = excluded.available, start_time = excluded.start_time, "
+            "end_time = excluded.end_time",
+            [int(r["weekday"]), 1 if r.get("available") else 0,
+             r.get("start_time") or "17:00", r.get("end_time") or "22:00"])
+
+
+def weekly_available_minutes() -> int:
+    total = 0
+    for row in get_availability():
+        if not row["available"]:
+            continue
+        total += max(0, _minutes(row["end_time"]) - _minutes(row["start_time"]))
+    return total
+
+
+def _minutes(hhmm: str) -> int:
+    try:
+        h, m = str(hhmm).split(":")
+        return int(h) * 60 + int(m)
+    except (ValueError, AttributeError):
+        return 0
+
+
+def build_initial_blocks(horizon_days: int = 14, replace: bool = True) -> dict:
+    """THE pre-planning call: empty, dated study blocks weighted by difficulty.
+
+    Requires Gemini -- there is no offline planner. A fabricated timetable that
+    looks real is worse than an error.
+    """
+    student = get_student()
+    courses = list_courses()
+    if not courses:
+        return {"ok": False, "error": "Add at least one course first.",
+                "blocks": [], "source": "skipped"}
+
+    availability = [
+        {"weekday": r["weekday"], "day": r["day"],
+         "start_time": r["start_time"], "end_time": r["end_time"]}
+        for r in get_availability() if r["available"]
+    ]
+    if not availability:
+        return {"ok": False, "error": "You haven't marked any day as available.",
+                "blocks": [], "source": "skipped"}
+
+    state = {
+        "today": today_iso(),
+        "today_weekday": WEEKDAY_NAMES[date.today().weekday()],
+        "horizon_days": horizon_days,
+        "study_habits": student.get("study_habits", ""),
+        "courses": [
+            {
+                "code": c["code"],
+                "name": c["name"],
+                "difficulty": c["difficulty"],
+                "difficulty_source": c["difficulty_source"],
+                "uoft_drop_rate": c.get("uoft_drop_rate"),
+                "uoft_workload": c.get("uoft_workload"),
+                "target_weekly_minutes": c.get("weekly_study_min") or 0,
+                "difficulty_reasoning": (c.get("uoft_reasoning") or "")[:300],
+            }
+            for c in courses
+        ],
+        "availability": availability,
+        "preferences": {
+            "daily_minutes": student.get("daily_capacity_min", 180),
+            "session_minutes": student.get("session_minutes", 90),
+            "break_minutes": student.get("break_minutes", 15),
+            "preferred_windows": student.get("preferred_windows", []),
+        },
+    }
+
+    try:
+        payload, source = gemini.plan_blocks(state)
+    except gemini.GeminiRequired as exc:
+        return {"ok": False, "error": str(exc), "blocks": [], "source": "unavailable"}
+
+    if replace:
+        db.execute("DELETE FROM session WHERE stage = 'preplan' AND date >= ?",
+                   [today_iso()])
+
+    kept = 0
+    for b in payload.get("blocks", []):
+        course = course_by_code(b.get("course_code", ""))
+        db.insert("session", {
+            "date": b.get("date") or today_iso(),
+            "start_time": b.get("start_time") or "17:00",
+            "end_time": b.get("end_time") or "18:30",
+            "course_id": course["id"] if course else None,
+            "focus": b.get("label") or f"{b.get('course_code', '')} study block",
+            "rationale": b.get("rationale") or "",
+            "todo_ids": "[]",   # intentionally empty -- a later stage fills these
+            "stage": "preplan",
+        })
+        kept += 1
+
+    return {"ok": True, "payload": payload, "source": source, "planned": kept,
+            "availability": availability}
 
 
 # --------------------------------------------------------------------------

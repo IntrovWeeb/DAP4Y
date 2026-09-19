@@ -125,9 +125,14 @@ def parse_syllabus(text: str, today: str = "") -> dict:
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
 
     code = ""
-    m = re.search(r"\b([A-Z]{2,5})\s?-?\s?(\d{3,4}[A-Z]?)\b", text or "")
+    # UofT form first: three letters, three digits, H/Y, campus digit.
+    m = re.search(r"\b([A-Z]{3}\d{3}[HY]\d)\b", text or "")
     if m:
-        code = f"{m.group(1)} {m.group(2)}"
+        code = m.group(1)
+    else:
+        m = re.search(r"\b([A-Z]{2,5})\s?-?\s?(\d{3,4}[A-Z]?)\b", text or "")
+        if m:
+            code = f"{m.group(1)} {m.group(2)}"
     name = ""
     for ln in lines[:8]:
         if code and code.replace(" ", "") in ln.replace(" ", "").replace("-", ""):
@@ -418,54 +423,46 @@ def find_overlaps(courses: list[dict], topics: list[dict]) -> dict:
     return {"overlaps": out[:8]}
 
 
-def plan_week(state: dict) -> dict:
-    """Greedy first-fit: walk forward from today, drop TODOs into free slots."""
-    base = _today(state.get("today", ""))
-    prefs = state.get("preferences", {})
-    daily = int(prefs.get("daily_minutes", 180))
-    block = int(prefs.get("session_minutes", 90))
-    busy = state.get("busy_blocks", [])
-    todos = list(state.get("todos", []))
-    horizon = int(state.get("horizon_days", 7))
 
-    busy_by_date: dict[str, list[tuple[int, int]]] = {}
-    for b in busy:
-        busy_by_date.setdefault(b.get("date", ""), []).append(
-            (_mins(b.get("start_time", "09:00")), _mins(b.get("end_time", "17:00")))
-        )
+def assess_difficulty(course_code: str, signals: dict) -> dict:
+    """Offline difficulty: a transparent weighted formula over the same fields."""
+    drop = signals.get("drop_rate_pct")
+    workload = signals.get("workload_5")
+    bird = signals.get("bird_count") or 0
+    reviews = signals.get("review_count") or 0
+    used, score, weight = [], 0.0, 0.0
 
-    sessions, idx = [], 0
-    for day in range(horizon):
-        if idx >= len(todos):
-            break
-        d = (base + timedelta(days=day)).isoformat()
-        cursor, used = _mins(prefs.get("day_start", "09:00")), 0
-        day_end = _mins(prefs.get("day_end", "22:00"))
-        while idx < len(todos) and used + block <= daily and cursor + block <= day_end:
-            clash = next((e for s, e in busy_by_date.get(d, []) if s < cursor + block and cursor < e), None)
-            if clash is not None:
-                cursor = clash
-                continue
-            t = todos[idx]
-            sessions.append({
-                "date": d,
-                "start_time": _hhmm(cursor),
-                "end_time": _hhmm(cursor + block),
-                "course_code": t.get("course_code", ""),
-                "focus": t.get("title", ""),
-                "rationale": f"Priority {t.get('priority', 0):.0f}: {t.get('priority_why', '')}",
-                "todo_titles": [t.get("title", "")],
-            })
-            cursor += block + int(prefs.get("break_minutes", 15))
-            used += block
-            idx += 1
+    if isinstance(drop, (int, float)):
+        # 0% -> 1.0, 25%+ -> 5.0
+        score += (1 + min(float(drop), 25.0) / 25.0 * 4) * 0.6
+        weight += 0.6
+        used.append("drop_rate_pct")
+    if isinstance(workload, (int, float)) and workload:
+        score += float(workload) * 0.4
+        weight += 0.4
+        used.append("workload_5")
+
+    difficulty = round(score / weight) if weight else 3
+    if bird and bird > 0:
+        difficulty = max(1, difficulty - 1)
+        used.append("bird_count")
+    difficulty = max(1, min(5, int(difficulty)))
+
+    confidence = "low" if reviews < 10 else "medium"
     return {
-        "sessions": sessions,
-        "constraints_understood": [f"{daily} min/day", f"{block} min blocks",
-                                   f"{len(busy)} busy block(s)", f"{horizon}-day horizon"],
-        "tradeoffs": ([f"{len(todos) - idx} TODO(s) did not fit in {horizon} days."]
-                      if idx < len(todos) else []) + ["Offline greedy scheduler."],
+        "course_code": course_code,
+        "difficulty": difficulty,
+        "confidence": confidence,
+        "reasoning": (
+            f"Offline formula over uoftindex.ca fields: drop rate {drop}%, "
+            f"workload {workload}/5, bird count {bird}, {reviews} reviews."
+            if used else
+            "uoftindex.ca returned no usable difficulty fields; defaulted to 3."
+        ),
+        "signals_used": used,
+        "weekly_study_hours": round(2 + difficulty * 1.2, 1),
     }
+
 
 
 def _mins(hhmm: str) -> int:

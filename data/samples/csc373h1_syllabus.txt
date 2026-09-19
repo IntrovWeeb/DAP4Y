@@ -1,7 +1,7 @@
-CS 341 - Algorithms (Fall 2026) (touched for commit)
-Instructor: Dr. A. Bhandari
+CSC373H1 - Algorithm Design, Analysis & Complexity (Fall 2026)
+Instructor: Prof. A. Nikolov
 Textbook: Cormen et al., Introduction to Algorithms, 4th ed.
-Credits: 3
+Credits: 0.5
 
 GRADING
 Assignment 1 - Divide & Conquer (8%) due September 26
