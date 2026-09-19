@@ -1,4 +1,4 @@
-CS341 lec wed - shortest paths (touched for commit)
+CSC373H1 lec wed - shortest paths
 
 Dijkstra
 - greedy, pick min-dist unvisited node, relax its edges

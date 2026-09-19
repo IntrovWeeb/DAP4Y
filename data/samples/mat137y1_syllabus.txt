@@ -1,0 +1,30 @@
+MAT137Y1 - Calculus with Proofs (2026-2027)
+Coordinator: Prof. L. Ferrante
+Textbook: Course notes (online) + Spivak, Calculus, 4th ed. for supplementary reading
+1.0 credit (full year)
+
+EVALUATION
+Problem Set 1 (5%) due September 29
+Term Test 1 (15%) - October 22
+Problem Set 2 (5%) due November 10
+Term Test 2 (15%) - November 26
+Problem Set 3 (5%) due January 26
+Term Test 3 (15%) - February 25
+Final examination (40%) - April 2027
+
+TOPICS
+Week 1: Logic, quantifiers, proof technique
+Week 2: Limits, the epsilon-delta definition
+Week 3: Continuity, intermediate value theorem
+Week 4: Derivatives from first principles
+Week 5: Mean value theorem and its consequences
+Week 6: Curve sketching, optimisation
+Week 7: Riemann integration
+Week 8: Fundamental theorem of calculus
+Week 9: Techniques of integration
+Week 10: Sequences and series
+Week 11: Power series, Taylor's theorem
+Week 12: Review
+
+This course assumes no prior exposure to proofs. Expect the workload to be
+front-loaded; students who fall behind in the first six weeks rarely recover.

@@ -11,6 +11,10 @@ venv/
 
 ### App data (samples under data/samples/ stay tracked)
 data/*.db
+data/cache/
+### Google Calendar credentials -- never commit these
+data/google_token.json
+data/google_credentials.json
 
 ### IDE / editor
 .idea/

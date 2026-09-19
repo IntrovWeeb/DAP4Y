@@ -38,8 +38,17 @@ CREATE TABLE IF NOT EXISTS course (
     textbook          TEXT    NOT NULL DEFAULT '',
     credits           REAL    NOT NULL DEFAULT 3,
     difficulty        INTEGER NOT NULL DEFAULT 3,        -- 1..5, effective value
-    difficulty_source TEXT    NOT NULL DEFAULT 'gemini', -- 'gemini' | 'manual'
+    difficulty_source TEXT    NOT NULL DEFAULT 'gemini', -- gemini|uoftindex|manual
     colour            TEXT    NOT NULL DEFAULT '#6c8ebf',
+    -- UofT Index evidence behind the difficulty call
+    uoft_code         TEXT    NOT NULL DEFAULT '',       -- resolved e.g. CSC373H1
+    uoft_drop_rate    REAL,
+    uoft_workload     REAL,
+    uoft_rating       REAL,
+    uoft_reviews      INTEGER,
+    uoft_confidence   TEXT    NOT NULL DEFAULT '',
+    uoft_reasoning    TEXT    NOT NULL DEFAULT '',
+    weekly_study_min  INTEGER NOT NULL DEFAULT 0,        -- Gemini's per-week estimate
     UNIQUE (code)
 );
 
@@ -87,7 +96,10 @@ CREATE TABLE IF NOT EXISTS session (
     focus       TEXT    NOT NULL DEFAULT '',
     rationale   TEXT    NOT NULL DEFAULT '',
     todo_ids    TEXT    NOT NULL DEFAULT '[]',          -- JSON list of todo ids
-    status      TEXT    NOT NULL DEFAULT 'planned'      -- planned|done|skipped
+    status      TEXT    NOT NULL DEFAULT 'planned',     -- planned|done|skipped
+    -- 'preplan' blocks are created empty by the planning stage; a later stage
+    -- fills todo_ids. 'filled' marks one that has been populated.
+    stage       TEXT    NOT NULL DEFAULT 'preplan'      -- preplan|filled
 );
 
 CREATE TABLE IF NOT EXISTS question (
@@ -142,6 +154,15 @@ CREATE TABLE IF NOT EXISTS overlap (
     saved_min  INTEGER NOT NULL DEFAULT 0
 );
 
+-- When the student is free to study, declared by hand: one window per weekday.
+-- This is the only time constraint the planner gets.
+CREATE TABLE IF NOT EXISTS availability (
+    weekday    INTEGER PRIMARY KEY,              -- 0 = Monday .. 6 = Sunday
+    available  INTEGER NOT NULL DEFAULT 1,
+    start_time TEXT    NOT NULL DEFAULT '17:00',
+    end_time   TEXT    NOT NULL DEFAULT '22:00'
+);
+
 CREATE TABLE IF NOT EXISTS ingest_log (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     kind       TEXT    NOT NULL,                        -- syllabus|notes|past_test|intent
@@ -166,11 +187,45 @@ def connect():
         conn.close()
 
 
+# Columns added after the first release. CREATE TABLE IF NOT EXISTS will not
+# add them to a database that already exists, so they are applied by hand.
+MIGRATIONS: list[tuple[str, str, str]] = [
+    ("course", "uoft_code", "TEXT NOT NULL DEFAULT ''"),
+    ("course", "uoft_drop_rate", "REAL"),
+    ("course", "uoft_workload", "REAL"),
+    ("course", "uoft_rating", "REAL"),
+    ("course", "uoft_reviews", "INTEGER"),
+    ("course", "uoft_confidence", "TEXT NOT NULL DEFAULT ''"),
+    ("course", "uoft_reasoning", "TEXT NOT NULL DEFAULT ''"),
+    ("course", "weekly_study_min", "INTEGER NOT NULL DEFAULT 0"),
+    ("session", "stage", "TEXT NOT NULL DEFAULT 'preplan'"),
+]
+
+DEFAULT_AVAILABILITY = [
+    (0, 1, "17:00", "22:00"), (1, 1, "17:00", "22:00"), (2, 1, "17:00", "22:00"),
+    (3, 1, "17:00", "22:00"), (4, 1, "17:00", "20:00"), (5, 1, "10:00", "16:00"),
+    (6, 1, "12:00", "20:00"),
+]
+
+
+def _migrate(conn) -> None:
+    for table, column, decl in MIGRATIONS:
+        existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 def init_db() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
         conn.execute(
             "INSERT OR IGNORE INTO student (id, name) VALUES (1, 'Student')"
+        )
+        conn.executemany(
+            "INSERT OR IGNORE INTO availability "
+            "(weekday, available, start_time, end_time) VALUES (?, ?, ?, ?)",
+            DEFAULT_AVAILABILITY,
         )
 
 

@@ -43,15 +43,16 @@ def seed(reset: bool = True) -> dict:
     files = load_samples()
     report: dict = {"syllabi": [], "notes": [], "intent": None}
 
-    for name in ("cs341_syllabus.txt", "stat260_syllabus.txt"):
+    for name in ("csc373h1_syllabus.txt", "sta257h1_syllabus.txt",
+                 "mat137y1_syllabus.txt"):
         if name in files:
             res = app.ingest_syllabus(files[name], filename=name)
             report["syllabi"].append(
                 {"file": name, "course": res["course"]["code"],
                  "created": res["created"], "source": res["source"]})
 
-    for name, code in (("cs341_week6_notes.txt", "CS 341"),
-                       ("stat260_week7_notes.txt", "STAT 260")):
+    for name, code in (("csc373h1_week6_notes.txt", "CSC373H1"),
+                       ("sta257h1_week7_notes.txt", "STA257H1")):
         course = app.course_by_code(code)
         if name in files and course:
             res = app.ingest_notes(course["id"], files[name], filename=name)
@@ -71,16 +72,16 @@ def seed(reset: bool = True) -> dict:
 def _seed_history() -> None:
     """A little attempt history so the coaching tabs have something to chew on."""
     history = [
-        ("CS 341", "Shortest paths", "why Dijkstra fails on negative edges", 0.35,
+        ("CSC373H1", "Shortest paths", "why Dijkstra fails on negative edges", 0.35,
          ["assumes greedy choice is final", "ignores negative edges"]),
-        ("CS 341", "Shortest paths", "trace Bellman-Ford and detect a negative cycle", 0.5,
+        ("CSC373H1", "Shortest paths", "trace Bellman-Ford and detect a negative cycle", 0.5,
          ["confuses relaxation rounds with path length"]),
-        ("CS 341", "Dynamic programming", "state the optimal substructure property", 0.8, []),
-        ("STAT 260", "Central Limit Theorem", "when to use Chebyshev vs the CLT", 0.3,
+        ("CSC373H1", "Dynamic programming", "state the optimal substructure property", 0.8, []),
+        ("STA257H1", "Central Limit Theorem", "when to use Chebyshev vs the CLT", 0.3,
          ["picks asymptotic tool for a finite-n bound"]),
-        ("STAT 260", "Central Limit Theorem", "apply the continuity correction", 0.45,
+        ("STA257H1", "Central Limit Theorem", "apply the continuity correction", 0.45,
          ["omits continuity correction"]),
-        ("STAT 260", "Law of Large Numbers", "distinguish convergence in probability vs distribution",
+        ("STA257H1", "Law of Large Numbers", "distinguish convergence in probability vs distribution",
          0.4, ["conflates modes of convergence"]),
     ]
     for code, topic_name, prompt, score, gaps in history:

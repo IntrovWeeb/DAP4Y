@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,7 +24,9 @@ from . import mock
 
 load_dotenv()
 
-MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "3"))
+RETRY_BACKOFF = 1.5   # seconds, doubled each attempt
 _API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
 _client = None
@@ -103,20 +106,57 @@ def _call(
     for att in attachments or []:
         parts.append(types.Part.from_bytes(data=att.data, mime_type=att.mime_type))
 
-    resp = client.models.generate_content(
-        model=MODEL,
-        contents=[types.Content(role="user", parts=parts)],
-        config=types.GenerateContentConfig(
-            system_instruction=system,
-            temperature=temperature,
-            response_mime_type="application/json",
-            response_schema=schema,
-        ),
+    config = types.GenerateContentConfig(
+        system_instruction=system,
+        temperature=temperature,
+        response_mime_type="application/json",
+        response_schema=schema,
     )
-    text = (resp.text or "").strip()
-    if not text:
-        raise RuntimeError("Gemini returned an empty response")
-    return json.loads(text)
+    contents = [types.Content(role="user", parts=parts)]
+
+    # 503 (model overloaded) and 429 (rate limited) are routine and transient.
+    # Without this, a demo-day spike silently degrades every panel to mock.
+    last: Exception | None = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            resp = client.models.generate_content(
+                model=MODEL, contents=contents, config=config)
+            text = (resp.text or "").strip()
+            if not text:
+                raise RuntimeError("Gemini returned an empty response")
+            return json.loads(text)
+        except Exception as exc:
+            last = exc
+            if not _retryable(exc) or attempt == MAX_RETRIES - 1:
+                raise
+            time.sleep(RETRY_BACKOFF * (2 ** attempt))
+    raise last if last else RuntimeError("Gemini call failed")
+
+
+def _retryable(exc: Exception) -> bool:
+    blob = f"{type(exc).__name__} {exc}"
+    return any(s in blob for s in
+               ("503", "429", "500", "UNAVAILABLE", "RESOURCE_EXHAUSTED",
+                "overloaded", "high demand", "Timeout", "Connection"))
+
+
+class GeminiRequired(RuntimeError):
+    """Raised by calls that must not silently degrade to a fake result.
+
+    Scheduling is one of these: a plausible-looking timetable produced offline
+    is worse than an error, because nothing on screen tells you it is fiction.
+    """
+
+
+def _require(fn) -> tuple[dict, str]:
+    """Run a Gemini call with NO fallback. Fails loudly instead of faking it."""
+    if not live():
+        raise GeminiRequired(
+            "This needs Gemini. " + (_client_error or "no GEMINI_API_KEY set"))
+    try:
+        return fn(), "gemini"
+    except Exception as exc:
+        raise GeminiRequired(f"Gemini call failed — {_redact(exc)}") from exc
 
 
 def _safe(fn, fallback, *args, **kwargs) -> tuple[dict, str]:
@@ -127,7 +167,10 @@ def _safe(fn, fallback, *args, **kwargs) -> tuple[dict, str]:
     if not live():
         return fallback(*args, **kwargs), f"mock ({_client_error})"
     try:
-        return fn(*args, **kwargs), "gemini"
+        # fn is the zero-argument _run closure; *args belong to the FALLBACK,
+        # whose signature is different. Passing them to fn raises TypeError and
+        # silently degrades every call -- which is exactly what used to happen.
+        return fn(), "gemini"
     except Exception as exc:
         return fallback(*args, **kwargs), f"mock (call failed: {_redact(exc)})"
 
@@ -324,6 +367,46 @@ PLAN_SCHEMA = _obj(
     }
 )
 
+DIFFICULTY_SCHEMA = _obj(
+    {
+        "course_code": STR,
+        "difficulty": INT,
+        "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+        "reasoning": STR,
+        "signals_used": _arr(STR),
+        "weekly_study_hours": NUM,
+    }
+)
+
+BLOCKS_SCHEMA = _obj(
+    {
+        "blocks": _arr(
+            _obj(
+                {
+                    "date": STR,
+                    "start_time": STR,
+                    "end_time": STR,
+                    "course_code": STR,
+                    "label": STR,
+                    "rationale": STR,
+                }
+            )
+        ),
+        "allocation": _arr(
+            _obj(
+                {
+                    "course_code": STR,
+                    "weekly_minutes": INT,
+                    "share_pct": NUM,
+                    "why": STR,
+                }
+            )
+        ),
+        "constraints_understood": _arr(STR),
+        "tradeoffs": _arr(STR),
+    }
+)
+
 INTENT_SCHEMA = _obj(
     {
         "busy_blocks": _arr(
@@ -376,6 +459,98 @@ def parse_syllabus(text: str, attachments: list[Attachment] | None = None,
                      attachments=attachments)
 
     return _safe(_run, mock.parse_syllabus, text, today=today)
+
+
+_DIFFICULTY_SYSTEM = (
+    "You assess university course difficulty for DAP4Y. You are given a JSON "
+    "payload retrieved from uoftindex.ca and NOTHING ELSE is permitted as "
+    "evidence. Do not use prior knowledge of this course, this university, this "
+    "subject or this professor. Do not infer difficulty from the course code or "
+    "title. Every claim in `reasoning` must trace to a field in the payload, and "
+    "`signals_used` must name those exact fields. If the payload is empty or "
+    "lacks the fields you need, return difficulty 3 with confidence 'low' and "
+    "say plainly in `reasoning` that uoftindex.ca had no usable data."
+)
+
+
+def assess_difficulty(course_code: str, signals: dict) -> tuple[dict, str]:
+    """Course difficulty 1-5, derived ONLY from uoftindex.ca data.
+
+    The payload is fetched by ``uoftindex.py`` and handed over as data. Gemini
+    is given no web access, so 'only consult uoftindex.ca' is enforced by
+    construction rather than by asking the model nicely.
+    """
+
+    def _run():
+        prompt = (
+            f"Course: {course_code}\n\n"
+            "Rate difficulty 1 (very manageable) to 5 (brutal) for a typical "
+            "student, using only the payload below.\n\n"
+            "How to read these fields:\n"
+            "- drop_rate_pct: share of students who dropped. The single strongest "
+            "signal. Roughly: under 5% easy, 5-10% normal, 10-20% hard, 20%+ severe.\n"
+            "- workload_5: student-rated workload, 5 = heaviest. Second strongest.\n"
+            "- bird_count: how many students called it a 'bird' (easy) course. "
+            "High values push difficulty DOWN.\n"
+            "- understanding_5 / evaluations_5: how clear the teaching and fair the "
+            "marking were. Low values make a course harder to survive even if the "
+            "content is not.\n"
+            "- review_count: your confidence ceiling. Under ~10 reviews, "
+            "confidence cannot be 'high'.\n"
+            "- prerequisites / enrolment_limits: depth of assumed background.\n"
+            "- drop_history: trend over recent offerings. A rising trend matters "
+            "more than one bad year.\n\n"
+            "Also estimate weekly_study_hours OUTSIDE of class time for this one "
+            "course, which the planner turns into calendar blocks.\n\n"
+            f"UOFTINDEX.CA PAYLOAD:\n{json.dumps(signals, ensure_ascii=False, indent=2)}"
+        )
+        return _call(system=_DIFFICULTY_SYSTEM, prompt=prompt,
+                     schema=DIFFICULTY_SCHEMA, temperature=0.1)
+
+    return _safe(_run, mock.assess_difficulty, course_code, signals)
+
+
+def plan_blocks(state: dict) -> tuple[dict, str]:
+    """PRE-PLANNING: lay out empty study blocks for the term.
+
+    Deliberately produces blocks with a course and a reason but NO tasks --
+    filling them with specific work is a later stage (owned separately), driven
+    by syllabus deadlines and notes. This call answers only 'when does this
+    student study, and for which course, and for how long'.
+    """
+
+    def _run():
+        prompt = (
+            "Lay out a recurring study schedule for this student's term.\n\n"
+            "FIRST decide the split: divide the student's weekly study capacity "
+            "across their courses, giving harder courses (higher difficulty, "
+            "higher target_weekly_minutes) a larger share. Report that split in "
+            "`allocation` with a justification per course that cites the "
+            "difficulty finding. THEN place the blocks to match it.\n\n"
+            "Hard rules:\n"
+            "- `availability` lists, per weekday, the ONLY window the student can "
+            "study in. Never place a block outside it, and never on a weekday "
+            "marked unavailable. Match each date to its weekday correctly.\n"
+            "- Never exceed daily_minutes on any single day.\n"
+            "- Each block covers one course and is about session_minutes long.\n"
+            "- Leave break_minutes between consecutive blocks on the same day.\n"
+            "- Spread each course across the week. Two 90-minute sessions on "
+            "different days beat one 3-hour block.\n"
+            "- Put the hardest course earliest in a day's window, while the "
+            "student is freshest.\n"
+            "- Do not fill every available hour. Leaving slack is a feature; if "
+            "the allocation is met, stop.\n\n"
+            "`label` is a short heading like 'CSC373H1 study block' -- describe "
+            "the slot, NOT specific tasks. Assigning actual work to these blocks "
+            "happens in a separate stage; inventing tasks here would be overwritten.\n"
+            "`rationale` is one line the student would find convincing.\n"
+            "Put anything you could not honour in `tradeoffs`.\n\n"
+            f"STATE:\n{json.dumps(state, ensure_ascii=False, indent=2)}"
+        )
+        return _call(system=_SYSTEM, prompt=prompt, schema=BLOCKS_SCHEMA,
+                     temperature=0.3)
+
+    return _require(_run)
 
 
 def parse_notes(text: str, course_code: str, attachments: list[Attachment] | None = None,
@@ -553,4 +728,4 @@ def plan_week(state: dict) -> tuple[dict, str]:
         )
         return _call(system=_SYSTEM, prompt=prompt, schema=PLAN_SCHEMA, temperature=0.3)
 
-    return _safe(_run, mock.plan_week, state)
+    return _require(_run)

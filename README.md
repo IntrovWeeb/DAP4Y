@@ -35,6 +35,31 @@ offline — just visibly worse, and every screen says so.
 
 ## What it does
 
+### Pre-planning — the term skeleton
+
+The planning stage builds **empty** study blocks. Assigning actual tasks to them
+is a separate stage, so nothing here invents work.
+
+1. **Syllabus → courses.** Gemini extracts deadlines, weightages and topics.
+2. **Course → difficulty, from uoftindex.ca.** DAP4Y queries UofT Index for the
+   course's drop rate, student-rated workload, bird count, ratings and review
+   count, then hands that one payload to Gemini. The model has **no web access**
+   and is instructed to use nothing but the payload — so "only consult
+   uoftindex.ca" is enforced by construction, not by asking nicely. It returns a
+   1–5 difficulty, a confidence, the exact fields it used, and a weekly study-hour
+   estimate.
+3. **You declare your availability.** One window per weekday — the hours you
+   could actually study. Edit it in the table on the Plan tab.
+4. **→ Gemini lays out the term.** It splits your weekly capacity across courses
+   (harder courses get a bigger share, justified per course), then places blocks
+   inside those windows.
+
+> **Why we don't point Gemini's `url_context` tool at the site.** uoftindex.ca is
+> a client-rendered SPA: fetching the course URL server-side returns an empty
+> JavaScript shell with zero course data. The real numbers come from the site's
+> own GraphQL endpoint, which is what `uoftindex.py` calls. Responses are cached
+> for 7 days so a demo doesn't hammer a volunteer-run site.
+
 ### Part 1 — messy input → an executable semester
 - **Syllabus → structure.** Every deadline, assessment weightage, the textbook,
   the topic outline, and a 1–5 difficulty estimate with Gemini's reasoning.
@@ -77,17 +102,27 @@ offline — just visibly worse, and every screen says so.
 ```
 src/
   backend/
-    app.py        service layer — the only thing the frontend imports
-    gemini.py     every Gemini call + its JSON schema
-    mock.py       offline heuristic fallback for each of those calls
-    scheduler.py  priority scoring + workload forecast (no LLM)
-    db.py         SQLite schema and helpers
-    seed.py       demo data, loaded through the real pipeline
+    app.py            service layer — the only thing the frontend imports
+    gemini.py         every Gemini call + its JSON schema
+    uoftindex.py      UofT Index GraphQL client (the only external data source)
+    mock.py           offline fallback for the PARSING calls only
+    scheduler.py      priority scoring + workload forecast (no LLM)
+    db.py             SQLite schema and helpers
+    seed.py           demo data, loaded through the real pipeline
   frontend/
-    app.py        Streamlit UI — no business logic
+    app.py            Streamlit UI — no business logic
+scripts/
+  verify_gemini.py    exercises every Gemini call, reports live vs. fallback
 data/
-  samples/        sample syllabi and notes used by the demo button
-  dap4y.db        created on first run (gitignored)
+  samples/            sample syllabi and notes used by the demo button
+  cache/uoftindex/    cached course lookups (gitignored)
+  dap4y.db            created on first run (gitignored)
+```
+
+Check the live path after adding a key:
+
+```bash
+python scripts/verify_gemini.py
 ```
 
 Two rules keep it honest: the frontend contains no business logic, and the
@@ -100,7 +135,7 @@ from Gemini or from the offline fallback.
 | Variable | Default | Purpose |
 |---|---|---|
 | `GEMINI_API_KEY` | — | Live parsing. Absent ⇒ mock mode. |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Model id. |
+| `GEMINI_MODEL` | `gemini-3.6-flash` | Model id. |
 | `DAP4Y_DB` | `data/dap4y.db` | SQLite path. |
 
 ## Known limits
@@ -113,3 +148,7 @@ This is a hackathon prototype.
 - Grading is an LLM's opinion. Useful for finding gaps, not for predicting marks.
 - Mock mode's parsers are genuinely weak — they're a safety net for a dead wifi
   connection, not a feature.
+- **Scheduling has no offline fallback, on purpose.** A fabricated timetable that
+  looks real is worse than an error, so `plan_blocks` fails loudly without a key.
+- Single-user: one `student` row, no accounts, no Google Calendar integration.
+  Availability is typed in by hand.
