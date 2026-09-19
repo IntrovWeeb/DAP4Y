@@ -390,7 +390,9 @@ def parse_notes(text: str, course_code: str, attachments: list[Attachment] | Non
             "honest est_minutes. Prefer active verbs ('derive', 'redo Q4', 'rewrite the "
             "proof from memory') over 'review chapter 3'. If the notes contain a "
             "question mark, a '??', a 'ask prof', or visibly trail off, add that to "
-            "flagged_confusions -- that is where the student is struggling.\n\n"
+            "flagged_confusions -- that is where the student is struggling. Additionally, make sure"
+            "to consider the student's english proficiency, their study habits, and what they"
+            "already understand.\n\n"
             f"NOTES:\n{text or '(see attached files)'}"
         )
         return _call(system=_SYSTEM, prompt=prompt, schema=NOTES_SCHEMA,
@@ -535,9 +537,11 @@ def plan_week(state: dict) -> tuple[dict, str]:
             "`tradeoffs` when you deviate.\n"
             "Rules: never schedule inside a busy block; stay within daily_minutes; keep "
             "each block near session_minutes; prefer the student's preferred windows; "
+            "avoid scheduling a block that overlaps with any adversary events (like accidents or appointments);"
             "put the hardest material in their stated peak hours; interleave courses "
             "rather than blocking one course all day; leave the day before a deadline "
-            "for that deadline's work. Every block needs a one-line `rationale` the "
+            "for that deadline's work; consider the student's past tests and"
+            "(especially) upcoming tests/exams when building. Every block needs a one-line `rationale` the "
             "student will find convincing.\n\n"
             f"STATE:\n{json.dumps(state, ensure_ascii=False, indent=2)}"
         )
