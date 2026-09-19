@@ -203,7 +203,8 @@ def parse_syllabus(text: str, today: str = "") -> dict:
     }
 
 
-def parse_notes(text: str, course_code: str) -> dict:
+def parse_notes(text: str, course_code: str, understanding_context: str = "",
+               energy_level: int | None = None) -> dict:
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
     headings = [ln for ln in lines if re.match(r"^(#{1,3}\s|\d+[.)]\s|[A-Z][A-Za-z ]{3,40}:$)", ln)]
     topics = []
@@ -224,18 +225,23 @@ def parse_notes(text: str, course_code: str) -> dict:
         for ln in lines
         if "??" in ln or re.search(r"\b(ask prof|unclear|confus\w*|not sure|revisit)\b", ln, re.I)
     ]
+    if understanding_context and re.search(r"\b(lost|confused|struggling|don't understand|unclear|not got it)\b", understanding_context, re.I):
+        confusions = confusions[:3] + [understanding_context[:100]]
+    if energy_level is not None and energy_level <= 3:
+        confusions = confusions[:3] + ["Low energy session; keep tasks short and focused."]
 
     todos = []
     for t in topics:
+        est = 40 if energy_level is None or energy_level >= 5 else 25
         todos.append({
             "title": f"Re-derive '{t['name']}' from a blank page",
             "detail": "Close the notes, reconstruct the core result, then diff against them.",
-            "topic": t["name"], "est_minutes": 40, "kind": "review",
+            "topic": t["name"], "est_minutes": est, "kind": "review",
         })
         todos.append({
             "title": f"Work 3 problems on {t['name']}",
             "detail": "Pick from the tutorial set; time-box each to 10 minutes.",
-            "topic": t["name"], "est_minutes": 45, "kind": "practice",
+            "topic": t["name"], "est_minutes": max(20, 45 - (6 - (energy_level or 6)) * 3), "kind": "practice",
         })
     for c in confusions[:3]:
         todos.append({

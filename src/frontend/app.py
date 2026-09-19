@@ -109,7 +109,8 @@ with tabs[0]:
 
     intake = st.radio("What are you handing over?",
                       ["Syllabus / course outline", "Lecture or tutorial notes",
-                       "Plain-language week ('Life Compiler')", "Past / mock test"],
+                       "Plain-language week ('Life Compiler')", "Add to schedule",
+                       "Past / mock test"],
                       horizontal=True, label_visibility="collapsed")
 
     # ---- syllabus -------------------------------------------------------
@@ -164,6 +165,14 @@ with tabs[0]:
                 text = st.text_area("Paste your notes", height=260, key="note_text",
                                     placeholder="Messy is fine. '??' and 'ask prof' are "
                                                 "signal, not noise.")
+                energy_level = st.slider(
+                    "Energy level",
+                    min_value=1,
+                    max_value=10,
+                    value=6,
+                    step=1,
+                    help="How much energy do you feel you have for this study session?",
+                )
             with col_b:
                 files = st.file_uploader("…or drop files / a whiteboard photo",
                                          type=UPLOAD_TYPES, accept_multiple_files=True,
@@ -176,8 +185,13 @@ with tabs[0]:
 
             if st.button("🚀 Extract TODOs", type="primary", disabled=not (text or files)):
                 with st.spinner("Gemini is reading your notes…"):
-                    res = api.ingest_notes(course["id"], text, to_attachments(files),
-                                           filename=", ".join(f.name for f in files or []))
+                    res = api.ingest_notes(
+                        course["id"],
+                        text,
+                        to_attachments(files),
+                        filename=", ".join(f.name for f in files or []),
+                        energy_level=energy_level,
+                    )
                 source_badge(res["source"])
                 created = res["created"]
                 st.success(f"{len(created.get('topics', []))} topics · "
@@ -223,6 +237,65 @@ with tabs[0]:
                                "you've added.")
             st.markdown("**Preferences written to your profile**")
             st.json(p.get("preferences", {}))
+
+    elif intake == "Add to schedule":
+        st.subheader("Add a one-off appointment to your schedule")
+        st.caption("Use this for fixed commitments like a doctor appointment, interview, travel, or family event. These can span multiple days.")
+
+        title = st.text_input("Appointment title", placeholder="Doctor's appointment")
+        start_date = st.date_input("Start date", min_value=datetime.today().date())
+        end_date = st.date_input("End date", min_value=start_date)
+        start_time = st.time_input("Start time")
+        end_time = st.time_input("End time")
+        notes = st.text_area("Notes (optional)", height=80,
+                             placeholder="e.g. Need to leave early for travel or this is a recurring checkup.")
+
+        if st.button("➕ Add appointment to schedule", type="primary", disabled=not title):
+            busy = st.session_state.setdefault("busy_blocks", [])
+            current = start_date
+            while current <= end_date:
+                if current == start_date and current == end_date:
+                    busy.append({
+                        "date": current.isoformat(),
+                        "start_time": start_time.strftime("%H:%M"),
+                        "end_time": end_time.strftime("%H:%M"),
+                        "label": title,
+                        "notes": notes,
+                    })
+                elif current == start_date:
+                    busy.append({
+                        "date": current.isoformat(),
+                        "start_time": start_time.strftime("%H:%M"),
+                        "end_time": "23:59",
+                        "label": title,
+                        "notes": notes,
+                    })
+                elif current == end_date:
+                    busy.append({
+                        "date": current.isoformat(),
+                        "start_time": "00:00",
+                        "end_time": end_time.strftime("%H:%M"),
+                        "label": title,
+                        "notes": notes,
+                    })
+                else:
+                    busy.append({
+                        "date": current.isoformat(),
+                        "start_time": "00:00",
+                        "end_time": "23:59",
+                        "label": title,
+                        "notes": notes,
+                    })
+                current = current + timedelta(days=1)
+            st.success(f"Added '{title}' from {start_date.isoformat()} to {end_date.isoformat()}.")
+            st.session_state["busy_blocks"] = busy
+
+        if st.session_state.get("busy_blocks"):
+            st.divider()
+            st.markdown("**Current scheduled blockers**")
+            block_df = pd.DataFrame(st.session_state["busy_blocks"])
+            st.dataframe(block_df[["date", "start_time", "end_time", "label", "notes"]],
+                         use_container_width=True, hide_index=True)
 
     # ---- past paper -----------------------------------------------------
     else:

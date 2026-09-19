@@ -156,13 +156,21 @@ def ingest_syllabus(text: str, attachments: list[Attachment] | None = None,
 
 
 def ingest_notes(course_id: int, text: str, attachments: list[Attachment] | None = None,
-                 filename: str = "") -> dict:
+                 filename: str = "", understanding_context: str = "",
+                 energy_level: int | None = None) -> dict:
     """Lecture/tutorial notes -> topics + the TODOs that fill a study session."""
     course = get_course(course_id)
     if not course:
         raise ValueError("unknown course")
 
-    payload, source = gemini.parse_notes(text, course["code"], attachments, today=today_iso())
+    payload, source = gemini.parse_notes(
+        text,
+        course["code"],
+        attachments,
+        today=today_iso(),
+        understanding_context=understanding_context,
+        energy_level=energy_level,
+    )
 
     topic_ids: dict[str, int] = {}
     for t in payload.get("topics", []):
