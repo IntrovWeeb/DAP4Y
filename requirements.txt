@@ -2,3 +2,11 @@ streamlit>=1.40
 google-genai>=0.8
 python-dotenv>=1.0
 pandas>=2.0
+# syllabus intake (.docx) + calendar
+python-docx>=1.1
+icalendar>=6.0
+recurring-ical-events>=3.0
+# Google Calendar (live OAuth). Optional: the .ics path works without these.
+google-api-python-client>=2.100
+google-auth-oauthlib>=1.2
+google-auth-httplib2>=0.2
